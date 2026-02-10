@@ -1,5 +1,5 @@
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from bots.Vis import run_vis
 from bots.Imperium import run_imperium
 from bots.Viator import run_viator
@@ -11,7 +11,7 @@ from bots.Bellator import run_bellator
 CHECK_INTERVAL_MINUTES = 5  # runs every 5 minutes
 
 def is_market_open():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # market hours 14:30–21:00 UTC (9:30–16:00 ET)
     if now.weekday() >= 5:
@@ -21,10 +21,15 @@ def is_market_open():
     return 14.5 <= hour <= 21
 
 def run_all_bots():
-    print(f"\n=== Running bots {datetime.utcnow()} ===")
+    print(f"\n=== Running bots {datetime.now(timezone.utc)} ===")
 
     run_vis()
     run_imperium()
+    run_viator()
+    run_vectura()
+    run_medicus()
+    run_cyclus()
+    run_bellator()
 
     print("=== Finished cycle ===")
 
