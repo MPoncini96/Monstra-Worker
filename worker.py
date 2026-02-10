@@ -1,7 +1,12 @@
 import time
 from datetime import datetime
-from bots.vis import run_vis
-from bots.imperium import run_imperium
+from bots.Vis import run_vis
+from bots.Imperium import run_imperium
+from bots.Viator import run_viator
+from bots.Vectura import run_vectura
+from bots.Medicus import run_medicus
+from bots.Cyclus import run_cyclus
+from bots.Bellator import run_bellator
 
 CHECK_INTERVAL_MINUTES = 5  # runs every 5 minutes
 
