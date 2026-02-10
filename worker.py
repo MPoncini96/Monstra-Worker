@@ -1,4 +1,5 @@
 import time
+import logging
 from datetime import datetime, timezone
 from bots.Vis import run_vis
 from bots.Imperium import run_imperium
@@ -7,6 +8,8 @@ from bots.Vectura import run_vectura
 from bots.Medicus import run_medicus
 from bots.Cyclus import run_cyclus
 from bots.Bellator import run_bellator
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
 CHECK_INTERVAL_MINUTES = 5  # runs every 5 minutes
 
@@ -21,7 +24,7 @@ def is_market_open():
     return 14.5 <= hour <= 21
 
 def run_all_bots():
-    print(f"\n=== Running bots {datetime.now(timezone.utc)} ===")
+    logging.info("=== Running bots ===")
 
     run_vis()
     run_imperium()
@@ -31,20 +34,20 @@ def run_all_bots():
     run_cyclus()
     run_bellator()
 
-    print("=== Finished cycle ===")
+    logging.info("=== Finished cycle ===")
 
 def main_loop():
-    print("Monstra Worker started...")
+    logging.info("Monstra Worker started...")
 
     while True:
         try:
             if is_market_open():
                 run_all_bots()
             else:
-                print("Market closed — sleeping")
+                logging.info("Market closed — sleeping")
 
         except Exception as e:
-            print("ERROR:", e)
+            logging.error(f"ERROR: {e}")
 
         time.sleep(CHECK_INTERVAL_MINUTES * 60)
 
