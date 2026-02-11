@@ -1,10 +1,13 @@
 import os
+import logging
 import psycopg
 
-print("Connecting to DB...")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+
+logging.info("Connecting to DB...")
 
 conn = psycopg.connect(os.environ["DATABASE_URL"])
-print("Connected!")
+logging.info("Connected!")
 
 conn.execute("select 1")
-print("Query worked!")
+logging.info("Query worked!")
