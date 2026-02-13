@@ -3,7 +3,8 @@ services:
     name: monstra-worker
     env: python
     plan: starter
+    envVars:
+      - key: DATABASE_URL
+        value: postgresql://monstra:IRNocUqjjnwdWHvqslU9TPEZ9qJt6sil@dpg-d66f04npm1nc73dhc5bg-a.oregon-postgres.render.com/monstra
     buildCommand: "pip install -r requirements.txt"
-    startCommand: python -u db_test.py
-
-
+    startCommand: python -u worker.py
