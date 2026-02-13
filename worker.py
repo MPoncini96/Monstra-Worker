@@ -28,14 +28,16 @@ def run_all_bots():
     logging.info("=== Running bots ===")
 
     # TEMP TEST SIGNAL (we remove this later)
+    s = run_vis()
     write_signal(
-        bot_id="vis",
-        ts=datetime.now(timezone.utc),
-        signal="TEST",
-        note="First DB write from Render worker",
-        payload={"status": "hello database"}
+        bot_id=s["bot_id"],
+        ts=s["ts"],
+        signal=s["signal"],
+        note=s.get("note"),
+        payload=s.get("payload", {})
     )
-    logging.info("Wrote test signal to database")
+    logging.info(f"Wrote {s['bot_id']} signal={s['signal']} to DB")
+
 
 
     logging.info("=== Finished cycle ===")
