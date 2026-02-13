@@ -1,6 +1,7 @@
 import time
 import logging
 from datetime import datetime, timezone
+from db import write_signal
 from bots.Vis import run_vis
 from bots.Imperium import run_imperium
 from bots.Viator import run_viator
@@ -26,13 +27,16 @@ def is_market_open():
 def run_all_bots():
     logging.info("=== Running bots ===")
 
-    run_vis()
-    run_imperium()
-    run_viator()
-    run_vectura()
-    run_medicus()
-    run_cyclus()
-    run_bellator()
+    # TEMP TEST SIGNAL (we remove this later)
+    write_signal(
+        bot_id="vis",
+        ts=datetime.now(timezone.utc),
+        signal="TEST",
+        note="First DB write from Render worker",
+        payload={"status": "hello database"}
+    )
+    logging.info("Wrote test signal to database")
+
 
     logging.info("=== Finished cycle ===")
 
