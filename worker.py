@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 
 from db import write_signal, get_latest_signal, get_bot_state, set_bot_state
 
-from bots.Vis import run_vis
-from bots.Viator import run_viator
+from bots.Vis import run_vis_stateful
+from bots.Viator import run_viator_stateful
 from bots.Vectura import run_vectura
 from bots.Medicus import run_medicus
 from bots.Imperium import run_imperium
@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
 CHECK_INTERVAL_MINUTES = 60  # hourly
 
-STATEFUL_BOTS = {"vectura", "medicus"}
+STATEFUL_BOTS = {"vis", "viator", "vectura", "medicus", "bellator"}
 
 def is_market_open() -> bool:
     now = datetime.now(timezone.utc)
@@ -126,7 +126,7 @@ def write_signal_safe(s: dict) -> None:
         payload=s.get("payload", {}) or {},
     )
     logging.info(f"Wrote {bot_id} signal={s['signal']} to DB ({reason})")
-STATEFUL_BOTS = {"vectura", "medicus"}
+STATEFUL_BOTS = {"vis", "viator", "vectura", "medicus", "bellator"}
 
 def run_bot(name: str, fn):
     # Load state only for stateful bots
@@ -150,15 +150,15 @@ def run_bot(name: str, fn):
     # Don’t store state in the signals payload (optional but recommended)
     s.pop("state", None)
 
-    # Write signal only if changed
     write_signal_safe(s)
+
 
 def run_all_bots() -> None:
     logging.info("=== Running bots ===")
 
     runners = [
-        ("vis", run_vis),
-        ("viator", run_viator),
+        ("vis", run_vis_stateful),
+        ("viator", run_viator_stateful),
         ("vectura", run_vectura),
         ("medicus", run_medicus),
         ("imperium", run_imperium),
