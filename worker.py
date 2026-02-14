@@ -4,20 +4,26 @@ import json
 import hashlib
 from datetime import datetime, timezone
 
-from db import write_signal, get_latest_signal
+from db import write_signal, get_latest_signal, get_bot_state, set_bot_state
 
 from bots.Vis import run_vis
 from bots.Viator import run_viator
+from bots.Vectura import run_vectura
+from bots.Medicus import run_medicus
+from bots.Imperium import run_imperium
+from bots.Cyclus import run_cyclus
+from bots.Bellator import run_bellator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
 CHECK_INTERVAL_MINUTES = 60  # hourly
 
+STATEFUL_BOTS = {"vectura", "medicus"}
 
 def is_market_open() -> bool:
     now = datetime.now(timezone.utc)
 
-    # market hours 14:30–21:00 UTC (9:30–16:00 ET)
+    # US market hours 14:30–21:00 UTC (9:30–16:00 ET), Mon–Fri
     if now.weekday() >= 5:
         return False
 
@@ -32,10 +38,11 @@ def _stable_json(obj) -> str:
     """
     return json.dumps(obj or {}, sort_keys=True, separators=(",", ":"), default=str)
 
+
 def normalize_payload(payload: dict) -> dict:
     """
-    Clean payload before hashing so tiny float noise
-    doesn't create fake 'changes'.
+    Clean payload before hashing so tiny float noise doesn't create fake 'changes'.
+    Extend this as you add new bots/fields.
     """
     if not payload:
         return {}
@@ -45,18 +52,19 @@ def normalize_payload(payload: dict) -> dict:
     # Round portfolio weights if present
     tw = p.get("target_weights")
     if isinstance(tw, dict):
-        p["target_weights"] = {
-            k: round(float(v), 6) for k, v in tw.items()
-        }
+        p["target_weights"] = {k: round(float(v), 6) for k, v in tw.items()}
 
-    # Round drawdown if Vis includes it
-    if "drawdown" in p:
-        try:
-            p["drawdown"] = round(float(p["drawdown"]), 6)
-        except Exception:
-            pass
+    # Round other common numeric fields (optional)
+    for k in ("drawdown", "dd", "turnover", "fee_frac"):
+        if k in p:
+            try:
+                p[k] = round(float(p[k]), 6)
+            except Exception:
+                pass
 
     return p
+
+
 def fingerprint_signal(s: dict) -> str:
     """
     Hash only the fields that represent meaningful change.
@@ -68,22 +76,23 @@ def fingerprint_signal(s: dict) -> str:
         "note": s.get("note"),
         "payload": normalize_payload(s.get("payload", {})),
     }
-
     raw = _stable_json(core)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def should_write_signal(new_signal: dict) -> tuple[bool, str]:
     """
-    Returns (should_write, reason)
+    Returns (should_write, reason).
+    Uses bot_id as the primary key to compare vs last saved row for that bot.
     """
-    bot_id = new_signal["bot_id"]
-    last = get_latest_signal(bot_id)
+    bot_id = new_signal.get("bot_id")
+    if not bot_id:
+        return True, "missing bot_id (cannot dedupe safely)"
 
+    last = get_latest_signal(bot_id)
     if last is None:
         return True, "no previous signal"
 
-    # Build a dict shaped like our new signal (so fingerprint compares apples-to-apples)
     last_like_new = {
         "bot_id": last.get("bot_id"),
         "signal": last.get("signal"),
@@ -93,41 +102,96 @@ def should_write_signal(new_signal: dict) -> tuple[bool, str]:
 
     if fingerprint_signal(new_signal) == fingerprint_signal(last_like_new):
         return False, "no change vs latest"
+
     return True, "changed"
 
 
 def write_signal_safe(s: dict) -> None:
+    """
+    Writes signal if it changed; otherwise skips.
+    All bots write to the same DB table; bot_id distinguishes them.
+    """
     ok, reason = should_write_signal(s)
+    bot_id = s.get("bot_id", "UNKNOWN")
+
     if not ok:
-        logging.info(f"Skip {s['bot_id']} ({reason})")
+        logging.info(f"Skip {bot_id} ({reason})")
         return
 
     write_signal(
-        bot_id=s["bot_id"],
+        bot_id=bot_id,
         ts=s["ts"],
         signal=s["signal"],
         note=s.get("note"),
         payload=s.get("payload", {}) or {},
     )
-    logging.info(f"Wrote {s['bot_id']} signal={s['signal']} to DB ({reason})")
+    logging.info(f"Wrote {bot_id} signal={s['signal']} to DB ({reason})")
+STATEFUL_BOTS = {"vectura", "medicus"}
 
+def run_bot(name: str, fn):
+    # Load state only for stateful bots
+    state = get_bot_state(name) if name in STATEFUL_BOTS else None
+
+    # Run bot (pass state if supported)
+    if name in STATEFUL_BOTS:
+        s = fn(state=state)
+    else:
+        s = fn()
+
+    # Ensure identity fields
+    s.setdefault("bot_id", name)
+    s.setdefault("ts", datetime.now(timezone.utc))
+    s.setdefault("payload", {})
+
+    # Persist updated state if present
+    if name in STATEFUL_BOTS and isinstance(s.get("state"), dict):
+        set_bot_state(name, s["state"])
+
+    # Don’t store state in the signals payload (optional but recommended)
+    s.pop("state", None)
+
+    # Write signal only if changed
+    write_signal_safe(s)
 
 def run_all_bots() -> None:
     logging.info("=== Running bots ===")
 
     runners = [
-        run_vis,
-        run_viator,
+        ("vis", run_vis),
+        ("viator", run_viator),
+        ("vectura", run_vectura),
+        ("medicus", run_medicus),
+        ("imperium", run_imperium),
+        ("cyclus", run_cyclus),
+        ("Bellator", run_bellator),
     ]
 
-    for fn in runners:
+    for name, fn in runners:
         try:
-            s = fn()
+            state = get_bot_state(name) if name in STATEFUL_BOTS else None
+
+            # Run bot (pass state only if stateful)
+            s = fn(state=state) if name in STATEFUL_BOTS else fn()
+
+            # Ensure required fields
+            s.setdefault("bot_id", name)
+            s.setdefault("ts", datetime.now(timezone.utc))
+            s.setdefault("payload", {})
+
+            # Persist state if returned
+            if name in STATEFUL_BOTS and isinstance(s.get("state"), dict):
+                set_bot_state(name, s["state"])
+
+            # Do not store state in signals table
+            s.pop("state", None)
+
             write_signal_safe(s)
+
         except Exception as e:
-            logging.error(f"Bot {getattr(fn, '__name__', str(fn))} failed: {e}")
+            logging.error(f"Bot {name} failed: {e}")
 
     logging.info("=== Finished cycle ===")
+
 
 
 def main_loop() -> None:

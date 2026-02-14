@@ -1,4 +1,4 @@
 pandas
 numpy
 yfinance
-psycopg[binary]
+psycopg2-binary
