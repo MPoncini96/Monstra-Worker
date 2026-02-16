@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from db import write_signal, get_latest_signal, get_bot_state, set_bot_state
 
 from bots.Vis import run_vis_stateful
-from bots.Viator import run_viator_stateful
+from bots.Viator import run_viator_with_pruning, COUNTRY_TICKERS, ViatorConfig
 from bots.Vectura import run_vectura
 from bots.Medicus import run_medicus
 from bots.Imperium import run_imperium
@@ -17,6 +17,8 @@ from bots.Bellator import run_bellator
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
 CHECK_INTERVAL_MINUTES = 60  # hourly
+
+VIATOR_CFG = ViatorConfig()
 
 STATEFUL_BOTS = {"vis", "viator", "vectura", "medicus", "bellator"}
 
@@ -126,7 +128,6 @@ def write_signal_safe(s: dict) -> None:
         payload=s.get("payload", {}) or {},
     )
     logging.info(f"Wrote {bot_id} signal={s['signal']} to DB ({reason})")
-STATEFUL_BOTS = {"vis", "viator", "vectura", "medicus", "bellator"}
 
 def run_bot(name: str, fn):
     # Load state only for stateful bots
@@ -158,12 +159,12 @@ def run_all_bots() -> None:
 
     runners = [
         ("vis", run_vis_stateful),
-        ("viator", run_viator_stateful),
+        ("viator", lambda state=None: run_viator_with_pruning(COUNTRY_TICKERS, cfg=VIATOR_CFG, state=state)),
         ("vectura", run_vectura),
         ("medicus", run_medicus),
         ("imperium", run_imperium),
         ("cyclus", run_cyclus),
-        ("Bellator", run_bellator),
+        ("bellator", run_bellator),
     ]
 
     for name, fn in runners:
