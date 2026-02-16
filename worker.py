@@ -63,7 +63,18 @@ def normalize_payload(payload: dict) -> dict:
 
     tw = p.get("target_weights")
     if isinstance(tw, dict):
-        p["target_weights"] = {k: round(float(v), 6) for k, v in tw.items()}
+        cleaned = {}
+        for k, v in tw.items():
+            v = float(v)
+            # kill floating point dust
+            if abs(v) < 1e-8:
+                v = 0.0
+            cleaned[k] = round(v, 6)
+
+        # optional: remove zero weights entirely
+        cleaned = {k: v for k, v in cleaned.items() if v != 0.0}
+
+        p["target_weights"] = cleaned
 
     for k in ("drawdown", "dd", "turnover", "fee_frac"):
         if k in p:
