@@ -2,6 +2,7 @@ import time
 import logging
 import json
 import hashlib
+import math
 from datetime import datetime, timezone
 
 from db import write_signal, get_latest_signal, get_bot_state, set_bot_state
@@ -33,6 +34,19 @@ def is_market_open() -> bool:
     return 14.5 <= hour <= 21.0
 
 
+def _sanitize_json_numbers(x):
+    """Replace NaN/Infinity with None so JSON is valid."""
+    if isinstance(x, float):
+        if math.isnan(x) or math.isinf(x):
+            return None
+        return x
+    if isinstance(x, dict):
+        return {k: _sanitize_json_numbers(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_sanitize_json_numbers(v) for v in x]
+    return x
+
+
 def _stable_json(obj) -> str:
     """
     Deterministic JSON string for hashing.
@@ -42,21 +56,15 @@ def _stable_json(obj) -> str:
 
 
 def normalize_payload(payload: dict) -> dict:
-    """
-    Clean payload before hashing so tiny float noise doesn't create fake 'changes'.
-    Extend this as you add new bots/fields.
-    """
     if not payload:
         return {}
 
     p = dict(payload)
 
-    # Round portfolio weights if present
     tw = p.get("target_weights")
     if isinstance(tw, dict):
         p["target_weights"] = {k: round(float(v), 6) for k, v in tw.items()}
 
-    # Round other common numeric fields (optional)
     for k in ("drawdown", "dd", "turnover", "fee_frac"):
         if k in p:
             try:
@@ -64,7 +72,7 @@ def normalize_payload(payload: dict) -> dict:
             except Exception:
                 pass
 
-    return p
+    return _sanitize_json_numbers(p)
 
 
 def fingerprint_signal(s: dict) -> str:
@@ -125,7 +133,7 @@ def write_signal_safe(s: dict) -> None:
         ts=s["ts"],
         signal=s["signal"],
         note=s.get("note"),
-        payload=s.get("payload", {}) or {},
+        payload=normalize_payload(s.get("payload", {}) or {}),
     )
     logging.info(f"Wrote {bot_id} signal={s['signal']} to DB ({reason})")
 

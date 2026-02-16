@@ -338,7 +338,7 @@ def run_viator_stateful(
 
     signal = "HOLD"
     note = f"As of {asof.date()}: holding {current_country or 'no position'}"
-    best_score = float("nan")
+    best_score = None
 
     if rebalance_due:
         try:
