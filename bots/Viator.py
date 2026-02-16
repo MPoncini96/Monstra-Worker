@@ -1,27 +1,50 @@
 """
 VIATOR (stateful signal generator) + Universe Pruning (keep 7 tickers per country)
 
-What this file gives you:
-1) prune_country_universe(...)  -> downloads data, drops dead tickers, keeps exactly 7 per country
-2) run_viator_stateful(...)     -> weekly rebalance (W-FRI snapped), selects best country by momentum score,
-                                  outputs target_weights + updated state
-
-Notes:
-- This is "live/signal" logic meant to behave like your backtest:
-  rebalance only on schedule; otherwise HOLD current weights.
-- No kill-switch here (your Viator backtest doesn’t include one).
-- State persistence is up to you (KV/DB/file). You pass state in; you get new_state out.
+Updates in this version:
+- More robust ticker fixups for symbols that commonly fail in yfinance (OTC ADR issues).
+- Pruning now *suppresses* yfinance download noise and treats failed tickers as "invalid" quietly.
+- Payload is JSON-safe: replaces NaN/Inf with None recursively to avoid Postgres jsonb errors.
+- best_country_score is now None when not available (never NaN).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
+import math
+import contextlib
+import logging
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
+
+# ----------------------------
+# Logging (silence yfinance spam)
+# ----------------------------
+
+logger = logging.getLogger(__name__)
+
+@contextlib.contextmanager
+def _quiet_yfinance(level: int = logging.ERROR):
+    """
+    Temporarily reduce noisy loggers while calling yfinance.
+    yfinance/pandas can emit a lot of warnings for missing tickers.
+    """
+    targets = ["yfinance", "urllib3", "requests"]
+    old = {}
+    for name in targets:
+        lg = logging.getLogger(name)
+        old[name] = lg.level
+        lg.setLevel(level)
+    try:
+        yield
+    finally:
+        for name, lvl in old.items():
+            logging.getLogger(name).setLevel(lvl)
 
 
 # ----------------------------
@@ -42,13 +65,13 @@ class ViatorConfig:
     )
 
     # Universe constraints
-    min_stocks_per_country: int = 7        # you asked to keep 7 per country
-    keep_per_country: int = 7              # exactly 7 survivors per country
-    min_points: int = 80                   # minimum non-NA Adj Close points for ticker to be "valid"
+    min_stocks_per_country: int = 7
+    keep_per_country: int = 7
+    min_points: int = 80
 
     # Cleaning
-    drop_na_threshold: float = 0.98        # used after download; drops tickers with too much missing data
-    prefer: str = "coverage"               # "coverage" or "recent" ranking when keeping 7
+    drop_na_threshold: float = 0.98
+    prefer: str = "coverage"               # "coverage" or "recent"
     threads: bool = False                  # yfinance more reliable with threads=False
 
 
@@ -74,20 +97,39 @@ COUNTRY_TICKERS: Dict[str, List[str]] = {
     "Switzerland": ["NVS", "RHHBY", "NSRGY", "UBS", "ABB", "ZURVY", "GEBN", "ROG", "CS"],
 }
 
-# Quick fixups for known broken symbols in your log.
-# Feel free to expand this list over time.
-TICKER_FIXUPS: dict[str, str | None] = {
-    "RDS.A": "SHEL",     # old shell
-    "DPWGY": "DHLGY",    # DHL
-    "DPSGY": "DHLGY",
-    "ANZBY": "ANZGY",    # ANZ ADR variant (often more stable)
-    "FMG": "FSUGY",      # Fortescue ADR
-    "WBC": "WBKCY",      # Westpac OTC ADR-ish symbol (yfinance varies)
-    "ORAN": "ORANY",     # Orange ADR variant
-    "ABB": "ABBN.SW",    # ABB on SIX exchange
-    "CS": None,          # Credit Suisse delisted
-}
+# ----------------------------
+# Fixups for flaky/changed tickers
+# ----------------------------
 
+TICKER_FIXUPS: dict[str, str | None] = {
+    # Existing
+    "RDS.A": "SHEL",
+    "DPWGY": "DHLGY",
+    "DPSGY": "DHLGY",
+    "ANZBY": "ANZGY",
+    "FMG": "FSUGY",
+    "ORAN": "ORANY",
+    "ABB": "ABBN.SW",
+    "CS": None,              # Credit Suisse delisted
+
+    # New (from your Render logs)
+    "GEBN": "GEBN.SW",        # Geberit -> SIX
+    "BMWYY": "BMW.DE",        # BMW -> XETRA (more reliable than OTC ADR)
+    "WLSCY": None,            # often flaky OTC; drop
+    "AGPPY": None,            # often flaky OTC; drop
+    "TLSYY": None,            # Telstra OTC often flaky; drop
+    "WBKCY": None,            # Westpac OTC often flaky; drop
+    "BSEFY": None,            # BSE ADR often flaky; drop
+    "VEDL": None,             # Vedanta ADR often flaky; drop
+    "CEMXY": None,            # Cemex ADR variant flaky; you already have CX
+    "ELET": None,             # Eletrobras variants can be flaky; drop if failing
+    "ERJ": None,              # Embraer can be flaky; drop if failing
+    "BRFS": None,             # BRF can be flaky; drop if failing
+    "ACTTF": None,            # often flaky OTC; drop
+    "HYMTF": None,            # 404 in your log; drop
+    "LGCLF": None,            # often flaky OTC; drop
+    "KSC": None,              # unclear; drop
+}
 
 def apply_ticker_fixups(country_map: Dict[str, List[str]]) -> Dict[str, List[str]]:
     cleaned: Dict[str, List[str]] = {}
@@ -98,9 +140,25 @@ def apply_ticker_fixups(country_map: Dict[str, List[str]]) -> Dict[str, List[str
             if t2 is None:
                 continue
             out.append(t2)
-        # de-dupe keep order
-        cleaned[country] = list(dict.fromkeys(out))
+        cleaned[country] = list(dict.fromkeys(out))  # de-dupe keep order
     return cleaned
+
+
+# ----------------------------
+# JSON safety helpers
+# ----------------------------
+
+def _json_safe(x):
+    """Replace NaN/Inf with None recursively (JSON-safe for Postgres jsonb)."""
+    if isinstance(x, float):
+        if math.isnan(x) or math.isinf(x):
+            return None
+        return x
+    if isinstance(x, dict):
+        return {k: _json_safe(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_json_safe(v) for v in x]
+    return x
 
 
 # ----------------------------
@@ -111,10 +169,9 @@ def _extract_adj_close(df: pd.DataFrame, tickers: List[str]) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):
-        if ("Adj Close" in df.columns.get_level_values(0)):
+        if "Adj Close" in df.columns.get_level_values(0):
             return df["Adj Close"].copy()
-        # fallback if yahoo changed column naming
-        if ("Close" in df.columns.get_level_values(0)):
+        if "Close" in df.columns.get_level_values(0):
             return df["Close"].copy()
         return pd.DataFrame()
     # single ticker case
@@ -129,15 +186,6 @@ def prune_country_universe(
     country_map: Dict[str, List[str]],
     cfg: ViatorConfig,
 ) -> Tuple[Dict[str, List[str]], pd.DataFrame]:
-    """
-    For each country:
-      - download tickers in one batch (Adj Close)
-      - drop tickers with < cfg.min_points non-NA points
-      - keep exactly cfg.keep_per_country by ranking
-    Countries unable to keep cfg.keep_per_country are dropped.
-
-    Returns: (pruned_map, report_df)
-    """
     rows = []
     pruned: Dict[str, List[str]] = {}
 
@@ -149,14 +197,16 @@ def prune_country_universe(
             rows.append({"country": country, "n_original": 0, "n_valid": 0, "kept": "", "dropped": ""})
             continue
 
-        data = yf.download(
-            tickers=tickers,
-            period=cfg.history_period,
-            auto_adjust=False,
-            progress=False,
-            threads=cfg.threads,
-            group_by="column",
-        )
+        with _quiet_yfinance():
+            data = yf.download(
+                tickers=tickers,
+                period=cfg.history_period,
+                auto_adjust=False,
+                progress=False,
+                threads=cfg.threads,
+                group_by="column",
+            )
+
         px = _extract_adj_close(data, tickers).sort_index()
 
         if px.empty:
@@ -169,11 +219,9 @@ def prune_country_universe(
             })
             continue
 
-        # strict validity by non-NA points
         non_na_counts = px.notna().sum(axis=0)
         valid = non_na_counts[non_na_counts >= cfg.min_points].index.tolist()
 
-        # if not enough valid, drop country
         if len(valid) < cfg.keep_per_country:
             dropped = [t for t in tickers if t not in valid]
             rows.append({
@@ -185,7 +233,6 @@ def prune_country_universe(
             })
             continue
 
-        # rank & keep exactly 7
         last_valid_date = px[valid].apply(lambda s: s.dropna().index.max())
         rank_df = pd.DataFrame({"count": non_na_counts[valid], "last": last_valid_date})
 
@@ -222,28 +269,24 @@ def get_rebalance_dates(index: pd.DatetimeIndex, rule: str) -> pd.DatetimeIndex:
     rb = df.resample(rule).last().dropna().index
     return rb.intersection(index)
 
-def download_prices_for_universe(
-    tickers: List[str],
-    cfg: ViatorConfig,
-) -> pd.DataFrame:
-    data = yf.download(
-        tickers=tickers,
-        period=cfg.history_period,
-        auto_adjust=False,
-        progress=False,
-        threads=cfg.threads,
-        group_by="column",
-    )
-    px = _extract_adj_close(data, tickers).sort_index()
-    return px
+def download_prices_for_universe(tickers: List[str], cfg: ViatorConfig) -> pd.DataFrame:
+    with _quiet_yfinance():
+        data = yf.download(
+            tickers=tickers,
+            period=cfg.history_period,
+            auto_adjust=False,
+            progress=False,
+            threads=cfg.threads,
+            group_by="column",
+        )
+    return _extract_adj_close(data, tickers).sort_index()
 
 def clean_prices(px: pd.DataFrame, drop_na_threshold: float) -> pd.DataFrame:
     if px.empty:
         return px
     coverage = 1.0 - px.isna().mean()
     keep = coverage[coverage >= drop_na_threshold].index.tolist()
-    px2 = px[keep].copy()
-    return px2.ffill()
+    return px[keep].copy().ffill()
 
 def select_country_and_holdings(
     mom: pd.DataFrame,
@@ -283,13 +326,6 @@ def run_viator_stateful(
     cfg: ViatorConfig | None = None,
     state: dict | None = None,
 ) -> dict:
-    """
-    Stateful weekly rotation signal:
-    - Uses country_map (ideally already pruned to 7 per country)
-    - Rebalances on rb dates only
-    - Selects best country based on weighted momentum of top_k tickers
-    - Returns signal + payload + updated state
-    """
     if cfg is None:
         cfg = ViatorConfig()
     if state is None:
@@ -299,25 +335,25 @@ def run_viator_stateful(
 
     current_weights = pd.Series(state.get("current_weights", {}), dtype=float)
     current_country = state.get("current_country")
-    last_rebalance_date = state.get("last_rebalance_date")  # ISO string or None
+    last_rebalance_date = state.get("last_rebalance_date")
 
-    # Universe tickers
     all_tickers = sorted({t for lst in country_map.values() for t in lst})
     px = download_prices_for_universe(all_tickers, cfg)
     px = clean_prices(px, cfg.drop_na_threshold)
 
     if px.empty or len(px.index) < (cfg.momentum_lookback_days + 5):
+        payload = {
+            "target_weights": {k: float(v) for k, v in current_weights.items() if float(v) != 0.0},
+            "selected_country": current_country,
+            "lookback_days": cfg.momentum_lookback_days,
+            "rebalance_rule": cfg.rebalance_rule,
+        }
         return {
             "bot_id": "viator",
             "ts": ts,
             "signal": "HOLD",
             "note": "Not enough price history; holding current weights",
-            "payload": {
-                "target_weights": {k: float(v) for k, v in current_weights.items() if float(v) != 0.0},
-                "selected_country": current_country,
-                "lookback_days": cfg.momentum_lookback_days,
-                "rebalance_rule": cfg.rebalance_rule,
-            },
+            "payload": _json_safe(payload),
             "state": state,
         }
 
@@ -326,19 +362,17 @@ def run_viator_stateful(
     rb_dates = get_rebalance_dates(px.index, cfg.rebalance_rule)
     rebalance_due = asof in set(rb_dates)
 
-    # Avoid double-rebalance on same asof date
     if last_rebalance_date is not None and pd.Timestamp(last_rebalance_date) == asof:
         rebalance_due = False
 
     mom = compute_momentum(px, cfg.momentum_lookback_days)
 
-    # if momentum not available on asof, don't rebalance
     if asof not in mom.index or mom.loc[asof].dropna().empty:
         rebalance_due = False
 
     signal = "HOLD"
     note = f"As of {asof.date()}: holding {current_country or 'no position'}"
-    best_score = None
+    best_score = None  # NEVER NaN
 
     if rebalance_due:
         try:
@@ -351,22 +385,23 @@ def run_viator_stateful(
 
             top_names = ", ".join([t for t, _ in holdings])
             signal = "REBALANCE"
-            best_score = float(scores.get(sel_country, np.nan))
+            best_score = float(scores.get(sel_country)) if sel_country in scores else None
             note = f"As of {asof.date()}: selected {sel_country}; holdings={top_names}"
         except Exception as e:
-            # If selection fails, HOLD
+            payload = {
+                "asof": str(asof),
+                "target_weights": {k: float(v) for k, v in current_weights.items() if float(v) != 0.0},
+                "selected_country": current_country,
+                "lookback_days": cfg.momentum_lookback_days,
+                "rebalance_rule": cfg.rebalance_rule,
+                "error": str(e),
+            }
             return {
                 "bot_id": "viator",
                 "ts": ts,
                 "signal": "HOLD",
                 "note": f"As of {asof.date()}: selection failed; holding. ({e})",
-                "payload": {
-                    "asof": str(asof),
-                    "target_weights": {k: float(v) for k, v in current_weights.items() if float(v) != 0.0},
-                    "selected_country": current_country,
-                    "lookback_days": cfg.momentum_lookback_days,
-                    "rebalance_rule": cfg.rebalance_rule,
-                },
+                "payload": _json_safe(payload),
                 "state": state,
             }
 
@@ -377,39 +412,30 @@ def run_viator_stateful(
         "last_asof": str(asof),
     }
 
+    payload = {
+        "asof": str(asof),
+        "lookback_days": cfg.momentum_lookback_days,
+        "rebalance_rule": cfg.rebalance_rule,
+        "selected_country": current_country,
+        "target_weights": {k: float(v) for k, v in current_weights.items() if float(v) != 0.0},
+        "best_country_score": best_score,
+    }
+
     return {
         "bot_id": "viator",
         "ts": ts,
         "signal": signal,
         "note": note,
-        "payload": {
-            "asof": str(asof),
-            "lookback_days": cfg.momentum_lookback_days,
-            "rebalance_rule": cfg.rebalance_rule,
-            "selected_country": current_country,
-            "target_weights": {k: float(v) for k, v in current_weights.items() if float(v) != 0.0},
-            "best_country_score": best_score,
-        },
+        "payload": _json_safe(payload),
         "state": new_state,
     }
 
-
-# ----------------------------
-# One-call helper (prune then run)
-# ----------------------------
 
 def run_viator_with_pruning(
     raw_country_map: Dict[str, List[str]],
     cfg: ViatorConfig | None = None,
     state: dict | None = None,
 ) -> dict:
-    """
-    Convenience wrapper:
-      - applies known ticker fixups
-      - prunes to exactly 7 per country (dropping countries that can't)
-      - runs stateful Viator signal on the pruned map
-    Returns signal dict with 'universe_report' included for debugging.
-    """
     if cfg is None:
         cfg = ViatorConfig()
 
@@ -418,36 +444,16 @@ def run_viator_with_pruning(
 
     result = run_viator_stateful(pruned_map, cfg=cfg, state=state)
 
-    # attach report summary (optional; remove if you want smaller payloads)
     result["universe"] = {
         "countries": list(pruned_map.keys()),
         "per_country": cfg.keep_per_country,
     }
+
+    # WARNING: this can be big; keep for debugging, remove later if desired
     result["universe_report"] = report.to_dict(orient="records")
+
+    # Ensure JSON-safe output
+    result["payload"] = _json_safe(result.get("payload", {}))
+    result["universe"] = _json_safe(result.get("universe", {}))
+    result["universe_report"] = _json_safe(result.get("universe_report", []))
     return result
-
-
-if __name__ == "__main__":
-    cfg = ViatorConfig(
-        history_period="9mo",
-        momentum_lookback_days=10,
-        rebalance_rule="W-FRI",
-        min_stocks_per_country=7,
-        keep_per_country=7,
-        min_points=80,
-        prefer="coverage",
-        threads=False,
-    )
-
-    # First run (no state yet)
-    state = {}
-    out = run_viator_with_pruning(COUNTRY_TICKERS, cfg=cfg, state=state)
-    print(out["signal"], out["note"])
-    print("Weights:", out["payload"]["target_weights"])
-    print("Selected country:", out["payload"]["selected_country"])
-
-    # Next run (persist state between calls in your DB/KV)
-    state2 = out["state"]
-    out2 = run_viator_with_pruning(COUNTRY_TICKERS, cfg=cfg, state=state2)
-    print(out2["signal"], out2["note"])
-
