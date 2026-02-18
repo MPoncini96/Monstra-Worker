@@ -5,7 +5,7 @@ import hashlib
 import math
 from datetime import datetime, timezone
 
-from db import write_signal, get_latest_signal, get_bot_state, set_bot_state
+from db import write_signal, get_latest_signal, get_bot_state, set_bot_state, update_bot_equity
 
 from bots.Vis import run_vis_stateful
 from bots.Viator import run_viator_with_pruning, COUNTRY_TICKERS, ViatorConfig
@@ -206,6 +206,9 @@ def run_all_bots() -> None:
             s.pop("state", None)
 
             write_signal_safe(s)
+            
+            # Update equity tracking
+            update_bot_equity(name, s)
 
         except Exception as e:
             logging.error(f"Bot {name} failed: {e}")
