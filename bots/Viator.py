@@ -91,7 +91,7 @@ COUNTRY_TICKERS: Dict[str, List[str]] = {
     "Brazil": ["VALE", "PBR", "ITUB", "BBD", "BSBR", "ABEV", "ELET", "ERJ", "SUZ", "BRFS", "GGB", "SID"],
     "Mexico": ["AMX", "FMX", "CX", "CEMXY", "OMAB", "PAC", "ASR", "TV", "KOF", "GMBXF", "SIM", "WMMVY"],
     "India": ["INFY", "WIT", "HDB", "IBN", "RDY", "MMYT", "SIFY", "VEDL", "IGIC", "YTRA", "BSEFY"],
-    "Australia": ["BHP", "RIO", "WDS", "FMG", "CSL", "WBC", "NABZY", "ANZBY", "TLSYY", "WOW", "MQBKY", "QBEIF"],
+    "Australia": ["BHP", "RIO", "WDS", "FMG", "CSL", "NABZY", "ANZBY", "TLSYY", "WOW", "MQBKY", "QBEIF"],
     "South Africa": ["SBSW", "GFI", "MTNOY", "VOD", "NPSNY", "ANGPY", "AGPPY", "SOUHY", "RNECY", "KRO", "TECK", "DRD"],
     "Netherlands": ["ASML", "ING", "PHG", "SHEL", "HEINY", "TKPHF", "WLSCY", "PNDHF", "AEG", "RNLXY", "STM"],
     "Switzerland": ["NVS", "RHHBY", "NSRGY", "UBS", "ABB", "ZURVY", "GEBN", "ROG", "CS"],
