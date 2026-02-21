@@ -150,13 +150,21 @@ def update_bot_equity(bot_id: str, signal_row: dict) -> None:
     prev_equity = float(prev.get("equity", 1.0))
     holdings = dict(prev.get("holdings") or {})
 
-    # If REBALANCE, adopt new weights if provided
+    # If REBALANCE with non-empty weights, adopt new weights; otherwise keep prior holdings.
     if sig == "REBALANCE" and isinstance(payload.get("target_weights"), dict):
-        holdings = {k: float(v) for k, v in payload["target_weights"].items() if float(v) != 0.0}
+        next_weights = {
+            k: float(v)
+            for k, v in payload["target_weights"].items()
+            if float(v) != 0.0
+        }
+        if next_weights:
+            holdings = next_weights
 
-    # If bot explicitly says "no position", go to cash (weights empty)
+    # Only wipe weights for explicit no-position or drawdown kill-switch triggers.
     note = (signal_row.get("note") or "").lower()
     if "no position" in note:
+        holdings = {}
+    elif sig == "RISK_OFF" and ("kill-switch" in note or "kill switch" in note or "killswitch" in note):
         holdings = {}
 
     if not holdings:
