@@ -140,7 +140,12 @@ def _today_utc_date():
     return datetime.now(timezone.utc).date()
 
 def update_bot_equity(bot_id: str, signal_row: dict) -> None:
-    """Store holdings, daily ret, and compounded equity in bot_equity."""
+    """Store holdings, daily ret, and compounded equity in bot_equity.
+    
+    IMPORTANT: Only calculates returns for NEW trading dates. If market is still open
+    (intraday), price data won't include today's close, so returns aren't calculated
+    to avoid double-counting yesterday's movement.
+    """
     payload = signal_row.get("payload") or {}
     sig = signal_row.get("signal")
     ts = signal_row.get("ts", datetime.now(timezone.utc))
@@ -148,6 +153,7 @@ def update_bot_equity(bot_id: str, signal_row: dict) -> None:
 
     prev = get_latest_bot_equity(bot_id) or {}
     prev_equity = float(prev.get("equity", 1.0))
+    prev_date = prev.get("d")  # Previous stored date
     holdings = dict(prev.get("holdings") or {})
 
     # If REBALANCE with non-empty weights, adopt new weights; otherwise keep prior holdings.
@@ -197,10 +203,23 @@ def update_bot_equity(bot_id: str, signal_row: dict) -> None:
         upsert_bot_equity(bot_id=bot_id, d=d, equity=prev_equity, ret=0.0, holdings=holdings)
         return
 
+    # Get the dates of the last two prices
+    last_price_date = last_two.index[-1].date() if hasattr(last_two.index[-1], 'date') else last_two.index[-1]
+    second_last_price_date = last_two.index[-2].date() if hasattr(last_two.index[-2], 'date') else last_two.index[-2]
+    
+    # CRITICAL: Only apply return if the last price date is NEW (not already processed).
+    # If market is open intraday, the last_price_date will be from yesterday, which was
+    # already applied in a previous update. Skip it to avoid double-counting.
+    if prev_date is not None and prev_date >= last_price_date:
+        # The price data is for a date we've already processed. Store current equity with 0 return.
+        upsert_bot_equity(bot_id=bot_id, d=d, equity=prev_equity, ret=0.0, holdings=holdings)
+        return
+
     daily_ret = (last_two.iloc[-1] / last_two.iloc[-2]) - 1.0
 
     w = pd.Series(holdings, dtype="float64")
-    w = w / w.sum()  # normalize in case of float dust
+    w[w.abs() < 1e-6] = 0.0  # Clean up floating point dust
+    w = w / w.sum()  # Renormalize to sum to 1
 
     # Align to available returns
     daily_ret = daily_ret[[c for c in daily_ret.index if c in w.index]]

@@ -388,6 +388,13 @@ def run_viator_stateful(
             best_score = float(scores.get(sel_country)) if sel_country in scores else None
             note = f"As of {asof.date()}: selected {sel_country}; holdings={top_names}"
         except Exception as e:
+            # Selection failed, but mark this rebalance date as processed to avoid repeated failures
+            # This prevents the bot from getting stuck retrying the same date over and over
+            last_rebalance_date = str(asof)
+            
+            # Log the failure for debugging (include in payload for diagnostics)
+            logger.warning(f"Viator selection failed on {asof.date()}: {e}")
+            
             payload = {
                 "asof": str(asof),
                 "target_weights": {k: float(v) for k, v in current_weights.items() if float(v) != 0.0},
@@ -396,13 +403,21 @@ def run_viator_stateful(
                 "rebalance_rule": cfg.rebalance_rule,
                 "error": str(e),
             }
+            
+            new_state_on_error = {
+                "current_country": current_country,
+                "last_rebalance_date": last_rebalance_date,  # Mark as attempted even on failure
+                "current_weights": {k: float(v) for k, v in current_weights.items() if float(v) != 0.0},
+                "last_asof": str(asof),
+            }
+            
             return {
                 "bot_id": "viator",
                 "ts": ts,
                 "signal": "HOLD",
                 "note": f"As of {asof.date()}: selection failed; holding. ({e})",
                 "payload": _json_safe(payload),
-                "state": state,
+                "state": new_state_on_error,
             }
 
     new_state = {
