@@ -113,7 +113,17 @@ def get_latest_bot_equity(bot_id: str) -> dict | None:
                 (bot_id,),
             )
             row = cur.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+
+            data = dict(row)
+            holdings = data.get("holdings")
+            if isinstance(holdings, dict):
+                data["holdings"] = {
+                    k: v for k, v in holdings.items() if not str(k).startswith("_")
+                }
+
+            return data
 
 def upsert_bot_equity(bot_id: str, d, equity: float, ret: float | None, holdings: dict | None) -> None:
     with get_conn() as conn, conn.cursor() as cur:
