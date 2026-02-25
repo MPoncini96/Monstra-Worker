@@ -16,29 +16,65 @@ def get_conn():
 
 def get_bot_state(bot_id: str) -> dict:
     """
-    Returns bot state in the format our bots expect:
-      {"risk_off": bool, "equity": float, "peak": float}
+    Returns bot state by loading from bot_equity history.
+    Computes peak from historical equity and loads last holdings as current_weights.
     If no row exists, returns defaults.
     """
+    # First check bot_state table for risk_off flag
+    risk_off = False
     with get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                """
-                SELECT bot_id, peak_equity, last_equity, risk_off
-                FROM bot_state
-                WHERE bot_id = %s
-                """,
+                "SELECT risk_off FROM bot_state WHERE bot_id = %s",
                 (bot_id,),
             )
             row = cur.fetchone()
+            if row:
+                risk_off = bool(row["risk_off"])
 
-    if not row:
+    # Load equity history to compute peak and get last state
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Get all equity values to compute peak
+            cur.execute(
+                "SELECT equity FROM bot_equity WHERE bot_id = %s ORDER BY d",
+                (bot_id,),
+            )
+            equity_rows = cur.fetchall()
+            
+            # Get latest row for current state
+            cur.execute(
+                """
+                SELECT d, equity, holdings
+                FROM bot_equity
+                WHERE bot_id = %s
+                ORDER BY d DESC
+                LIMIT 1
+                """,
+                (bot_id,),
+            )
+            latest = cur.fetchone()
+
+    if not latest:
         return {"risk_off": False, "equity": 1.0, "peak": 1.0}
 
+    equity = float(latest["equity"])
+    peak = max([float(r["equity"]) for r in equity_rows]) if equity_rows else equity
+    last_date = str(latest["d"])
+    
+    holdings = latest.get("holdings") or {}
+    # Filter out _meta keys for current_weights
+    current_weights = {
+        k: float(v) for k, v in holdings.items() 
+        if not str(k).startswith("_")
+    }
+
     return {
-        "risk_off": bool(row["risk_off"]),
-        "equity": float(row["last_equity"]),
-        "peak": float(row["peak_equity"]),
+        "risk_off": risk_off,
+        "equity": equity,
+        "peak": peak,
+        "last_date": last_date,
+        "current_weights": current_weights,
     }
 
 def set_bot_state(bot_id: str, state: dict) -> None:

@@ -360,14 +360,17 @@ def run_viator_stateful(
     asof = px.index[-1]
 
     rb_dates = get_rebalance_dates(px.index, cfg.rebalance_rule)
-    rebalance_due = asof in set(rb_dates)
+    rb_dates = rb_dates[rb_dates <= asof]
+    rebalance_date = rb_dates[-1] if len(rb_dates) > 0 else None
+    rebalance_due = rebalance_date is not None
 
-    if last_rebalance_date is not None and pd.Timestamp(last_rebalance_date) == asof:
-        rebalance_due = False
+    if rebalance_due and last_rebalance_date is not None:
+        if pd.Timestamp(last_rebalance_date) == rebalance_date:
+            rebalance_due = False
 
     mom = compute_momentum(px, cfg.momentum_lookback_days)
 
-    if asof not in mom.index or mom.loc[asof].dropna().empty:
+    if rebalance_due and (rebalance_date not in mom.index or mom.loc[rebalance_date].dropna().empty):
         rebalance_due = False
 
     signal = "HOLD"
@@ -376,21 +379,21 @@ def run_viator_stateful(
 
     if rebalance_due:
         try:
-            sel_country, holdings, scores = select_country_and_holdings(mom, asof, country_map, cfg)
+            sel_country, holdings, scores = select_country_and_holdings(mom, rebalance_date, country_map, cfg)
             new_weights = {t: float(w) for t, w in holdings}
 
             current_weights = pd.Series(new_weights, dtype=float)
             current_country = sel_country
-            last_rebalance_date = str(asof)
+            last_rebalance_date = str(rebalance_date)
 
             top_names = ", ".join([t for t, _ in holdings])
             signal = "REBALANCE"
             best_score = float(scores.get(sel_country)) if sel_country in scores else None
-            note = f"As of {asof.date()}: selected {sel_country}; holdings={top_names}"
+            note = f"As of {asof.date()}: selected {sel_country} on {rebalance_date.date()}; holdings={top_names}"
         except Exception as e:
             # Selection failed, but mark this rebalance date as processed to avoid repeated failures
             # This prevents the bot from getting stuck retrying the same date over and over
-            last_rebalance_date = str(asof)
+            last_rebalance_date = str(rebalance_date)
             
             # Log the failure for debugging (include in payload for diagnostics)
             logger.warning(f"Viator selection failed on {asof.date()}: {e}")
@@ -401,6 +404,7 @@ def run_viator_stateful(
                 "selected_country": current_country,
                 "lookback_days": cfg.momentum_lookback_days,
                 "rebalance_rule": cfg.rebalance_rule,
+                "rebalance_date": str(rebalance_date) if rebalance_date is not None else None,
                 "error": str(e),
             }
             
