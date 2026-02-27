@@ -18,7 +18,7 @@ from db import upsert_bot_equity
 
 
 START_DATE = "2025-01-01"
-END_DATE = "2026-02-24"  # exclusive end (live begins this day)
+END_DATE = "2026-02-25"  # exclusive end (live begins this day)
 BOT_ID = "viator"
 
 

@@ -141,7 +141,7 @@ def get_latest_bot_equity(bot_id: str) -> dict | None:
             cur.execute(
                 """
                 SELECT bot_id, d, equity, ret, holdings
-                FROM bot_equity
+                FROM trading.bot_equity
                 WHERE bot_id = %s
                 ORDER BY d DESC
                 LIMIT 1
@@ -165,15 +165,15 @@ def upsert_bot_equity(bot_id: str, d, equity: float, ret: float | None, holdings
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO bot_equity (bot_id, d, equity, ret, holdings)
-                        VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO trading.bot_equity (bot_id, d, equity, ret, holdings)
+                                    VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (bot_id, d) DO UPDATE SET
-              equity = EXCLUDED.equity,
-              ret = EXCLUDED.ret,
-              holdings = EXCLUDED.holdings,
-              updated_at = now()
+                equity = EXCLUDED.equity,
+                ret = EXCLUDED.ret,
+                holdings = EXCLUDED.holdings,
+                updated_at = now()
             """,
-                        (bot_id, d, float(equity), None if ret is None else float(ret), Json(holdings or {})),
+            (bot_id, d, float(equity), None if ret is None else float(ret), Json(holdings or {})),
         )
         conn.commit()
 
