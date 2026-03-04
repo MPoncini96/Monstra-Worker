@@ -7,21 +7,21 @@ from datetime import datetime, timezone
 
 from db import write_signal, get_latest_signal, get_bot_state, set_bot_state, update_bot_equity
 
-from bots.Vis import run_vis_stateful
-from bots.Viator import run_viator_with_pruning, COUNTRY_TICKERS, ViatorConfig
-from bots.Vectura import run_vectura
-from bots.Medicus import run_medicus
-from bots.Imperium import run_imperium
-from bots.Cyclus import run_cyclus
-from bots.Bellator import run_bellator
+from bots.alpha1 import run_alpha1
+from bots.alpha2 import run_alpha2
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
 CHECK_INTERVAL_MINUTES = 60  # hourly
 
-VIATOR_CFG = ViatorConfig()
+# Alpha1 (Rank Rotation) bots: bellator, imperium, medicus, vectura, vis
+ALPHA1_BOTS = ["bellator", "imperium", "medicus", "vectura", "vis"]
 
-STATEFUL_BOTS = {"vis", "viator", "vectura", "medicus", "bellator"}
+# Alpha2 (Sector Relay) bots: cyclus, viator
+ALPHA2_BOTS = ["cyclus", "viator"]
+
+# Both alpha strategies handle stateful operations
+STATEFUL_BOTS = {"alpha1", "alpha2"}
 
 def is_market_open() -> bool:
     now = datetime.now(timezone.utc)
@@ -176,42 +176,35 @@ def run_bot(name: str, fn):
 def run_all_bots() -> None:
     logging.info("=== Running bots ===")
 
-    runners = [
-        ("vis", run_vis_stateful),
-        ("viator", lambda state=None: run_viator_with_pruning(COUNTRY_TICKERS, cfg=VIATOR_CFG, state=state)),
-        ("vectura", run_vectura),
-        ("medicus", run_medicus),
-        ("imperium", run_imperium),
-        ("cyclus", run_cyclus),
-        ("bellator", run_bellator),
-    ]
-
-    for name, fn in runners:
+    # Run all alpha1 bots (bellator, imperium, medicus, vectura, vis)
+    for bot_id in ALPHA1_BOTS:
         try:
-            state = get_bot_state(name) if name in STATEFUL_BOTS else None
-
-            # Run bot (pass state only if stateful)
-            s = fn(state=state) if name in STATEFUL_BOTS else fn()
+            s = run_alpha1(bot_id)
 
             # Ensure required fields
-            s.setdefault("bot_id", name)
             s.setdefault("ts", datetime.now(timezone.utc))
             s.setdefault("payload", {})
 
-            # Persist state if returned
-            if name in STATEFUL_BOTS and isinstance(s.get("state"), dict):
-                set_bot_state(name, s["state"])
-
-            # Do not store state in signals table
-            s.pop("state", None)
-
             write_signal_safe(s)
-            
-            # Update equity tracking
-            update_bot_equity(name, s)
+            update_bot_equity(bot_id, s)
 
         except Exception as e:
-            logging.error(f"Bot {name} failed: {e}")
+            logging.error(f"Bot {bot_id} (alpha1) failed: {e}")
+
+    # Run all alpha2 bots (cyclus, viator)
+    for bot_id in ALPHA2_BOTS:
+        try:
+            s = run_alpha2(bot_id)
+
+            # Ensure required fields
+            s.setdefault("ts", datetime.now(timezone.utc))
+            s.setdefault("payload", {})
+
+            write_signal_safe(s)
+            update_bot_equity(bot_id, s)
+
+        except Exception as e:
+            logging.error(f"Bot {bot_id} (alpha2) failed: {e}")
 
     logging.info("=== Finished cycle ===")
 

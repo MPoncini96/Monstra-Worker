@@ -106,6 +106,7 @@ def build_stock_weights_with_fallback(
 
 
 def run_alpha2(
+    bot_id: str,
     lookback_days: int | None = None,
     history_period: str | None = None,
     rebalance_freq: str | None = None,
@@ -114,6 +115,9 @@ def run_alpha2(
 ) -> dict:
     """
     Alpha2 (Sector Relay) — stateless signal generator.
+    
+    Args:
+        bot_id: one of {cyclus, viator}
     """
     ts = datetime.now(timezone.utc)
 
@@ -129,7 +133,7 @@ def run_alpha2(
     if use_db_config:
         try:
             from db import get_alpha2_config
-            config = get_alpha2_config("cyclus")
+            config = get_alpha2_config(bot_id)
             if config:
                 # Note: bench is not in alpha2 table, use the default
                 proxies = config.get("proxies", DEFAULT_PROXIES)
@@ -140,7 +144,7 @@ def run_alpha2(
                 rebalance_freq_cfg = config.get("rebalance_freq", DEFAULT_REBALANCE_FREQ)
                 stock_bench_mode_cfg = config.get("stock_bench_mode", DEFAULT_STOCK_BENCH_MODE)
         except Exception as e:
-            print(f"Warning: Could not load cyclus config from database, using defaults: {e}")
+            print(f"Warning: Could not load {bot_id} config from database, using defaults: {e}")
 
     lookback_days = lookback_days if lookback_days is not None else lookback_days_cfg
     history_period = history_period if history_period is not None else history_period_cfg
@@ -170,7 +174,7 @@ def run_alpha2(
     prices = prices.dropna(how="all").sort_index()
     if prices.empty or len(prices.index) < (lookback_days + 5):
         return {
-            "bot_id": "cyclus",
+            "bot_id": bot_id,
             "ts": ts,
             "signal": "HOLD",
             "note": f"Not enough price history; holding {bench}",
@@ -189,7 +193,7 @@ def run_alpha2(
 
     if tr_row is None:
         return {
-            "bot_id": "cyclus",
+            "bot_id": bot_id,
             "ts": ts,
             "signal": "HOLD",
             "note": f"As of {asof.date()}: no trailing data for prev_date; holding {bench}",
@@ -219,7 +223,7 @@ def run_alpha2(
             "stock_bench_mode": stock_bench_mode,
             "target_weights": target_w,
         }
-        return {"bot_id": "cyclus", "ts": ts, "signal": signal, "note": note, "payload": payload}
+        return {"bot_id": bot_id, "ts": ts, "signal": signal, "note": note, "payload": payload}
 
     proxy = proxies[best_sector]
     stock_universe = stocks[best_sector]
@@ -263,4 +267,4 @@ def run_alpha2(
         "target_weights": target_w,
     }
 
-    return {"bot_id": "cyclus", "ts": ts, "signal": signal, "note": note, "payload": payload}
+    return {"bot_id": bot_id, "ts": ts, "signal": signal, "note": note, "payload": payload}

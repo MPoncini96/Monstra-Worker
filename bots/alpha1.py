@@ -38,6 +38,7 @@ def _top_n_by_growth(growth_row: pd.Series, n: int = 4) -> list[str]:
 
 
 def run_alpha1(
+    bot_id: str,
     lookback_days: int | None = None,
     top_n: int | None = None,
     history_period: str | None = None,
@@ -46,12 +47,15 @@ def run_alpha1(
 ) -> dict:
     """
     Alpha1 (Rank Rotation) — Signal generator:
-    - Fetches configuration from database (trading.bots) if use_db_config=True
+    - Fetches configuration from database (trading.alpha1) for given bot_id
     - Falls back to default parameters if database unavailable or use_db_config=False
-    - Download 1h prices for UNIVERSE
+    - Download 1h prices for UNIVERSE from config
     - Compute growth over lookback_days (assuming ~24 bars/day)
     - Select top_n tickers by growth
     - Output target_weights (40/30/20/10 default)
+    
+    Args:
+        bot_id: one of {bellator, imperium, medicus, vectura, vis}
     """
     ts = datetime.now(timezone.utc)
     
@@ -67,7 +71,7 @@ def run_alpha1(
     if use_db_config:
         try:
             from db import get_bot_config
-            config = get_bot_config("alpha1")
+            config = get_bot_config(bot_id)
             if config:
                 universe = config.get("universe", DEFAULT_UNIVERSE)
                 cash_equivalent = config.get("cash_equivalent", DEFAULT_CASH_EQUIVALENT)
@@ -77,7 +81,7 @@ def run_alpha1(
                 history_period_config = config.get("history_period", "60d")
                 interval_config = config.get("interval", "1h")
         except Exception as e:
-            print(f"Warning: Could not load config from database, using defaults: {e}")
+            print(f"Warning: Could not load config for {bot_id} from database, using defaults: {e}")
     
     # Allow function parameters to override config
     lookback_days = lookback_days if lookback_days is not None else lookback_days_config
@@ -108,11 +112,11 @@ def run_alpha1(
 
     prices = prices.sort_index().dropna(how="all")
 
-    # Not enough history -> HOLD cash-like (VOO as default)
+    # Not enough history -> HOLD cash-like (default from config)
     min_rows = int(lookback_days * 24) + 5
     if prices.empty or len(prices.index) < min_rows:
         return {
-            "bot_id": "alpha1",
+            "bot_id": bot_id,
             "ts": ts,
             "signal": "HOLD",
             "note": f"Not enough {interval} history for lookback={lookback_days}d; holding {cash_equivalent}",
@@ -143,7 +147,7 @@ def run_alpha1(
         note = f"As of {asof}: top={', '.join(top)}"
 
     return {
-        "bot_id": "alpha1",
+        "bot_id": bot_id,
         "ts": ts,
         "signal": signal,
         "note": note,
