@@ -12,7 +12,7 @@ def main() -> None:
 
     cur.execute(
         "SELECT bot_id, ts, signal, note "
-        "FROM signals "
+        "FROM trading.signals "
         "WHERE ts::date = (now() at time zone 'utc')::date "
         "ORDER BY ts DESC LIMIT 50"
     )
@@ -21,7 +21,7 @@ def main() -> None:
     for row in rows:
         print(row)
 
-    cur.execute("SELECT bot_id, ts, signal FROM signals ORDER BY ts DESC LIMIT 10")
+    cur.execute("SELECT bot_id, ts, signal FROM trading.signals ORDER BY ts DESC LIMIT 10")
     print("last_10:")
     for row in cur.fetchall():
         print(row)
