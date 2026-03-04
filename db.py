@@ -106,10 +106,28 @@ def set_bot_state(bot_id: str, state: dict) -> None:
 def write_signal(bot_id: str, ts, signal: str, note: str | None, payload: dict):
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # Ensure signals table exists
             cur.execute(
                 """
-                INSERT INTO signals (bot_id, ts, signal, note, payload)
+                CREATE TABLE IF NOT EXISTS trading.signals (
+                    bot_id TEXT NOT NULL,
+                    ts TIMESTAMP NOT NULL,
+                    signal TEXT NOT NULL,
+                    note TEXT,
+                    payload JSONB,
+                    PRIMARY KEY (bot_id, ts)
+                )
+                """
+            )
+            
+            cur.execute(
+                """
+                INSERT INTO trading.signals (bot_id, ts, signal, note, payload)
                 VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (bot_id, ts) DO UPDATE SET
+                    signal = EXCLUDED.signal,
+                    note = EXCLUDED.note,
+                    payload = EXCLUDED.payload
                 """,
                 (bot_id, ts, signal, note, Json(payload or {})),
             )
@@ -124,7 +142,7 @@ def get_latest_signal(bot_id: str) -> dict | None:
             cur.execute(
                 """
                 SELECT bot_id, ts, signal, note, payload
-                FROM signals
+                FROM trading.signals
                 WHERE bot_id = %s
                 ORDER BY ts DESC
                 LIMIT 1
