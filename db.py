@@ -279,3 +279,75 @@ def update_bot_equity(bot_id: str, signal_row: dict) -> None:
     equity = prev_equity * (1.0 + ret)
 
     upsert_bot_equity(bot_id=bot_id, d=d, equity=equity, ret=ret, holdings=holdings)
+
+
+def get_bot_config(bot_id: str) -> dict | None:
+    """
+    Fetch bot configuration from trading.alpha1 table.
+    Returns dict with keys: universe, cash_equivalent, top_n, weights, 
+    lookback_days, history_period, interval
+    Returns None if bot_id not found or table doesn't exist.
+    """
+    try:
+        with get_conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT bot_id, name, description, universe, cash_equivalent,
+                           top_n, weights, lookback_days, history_period, 
+                           interval, is_active
+                    FROM trading.alpha1
+                    WHERE bot_id = %s AND is_active = TRUE
+                    """,
+                    (bot_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                
+                config = dict(row)
+                # Parse JSONB fields
+                config['universe'] = list(config.get('universe', []))
+                config['weights'] = list(config.get('weights', [0.40, 0.30, 0.20, 0.10]))
+                return config
+    except Exception as e:
+        # Table might not exist yet or other DB error
+        print(f"Warning: Could not fetch bot config for {bot_id}: {e}")
+        return None
+
+
+def get_alpha2_config(bot_id: str = None) -> dict | None:
+    """
+    Fetch bot configuration from trading.alpha2 table.
+    Works for cyclus (sector relay) and viator (country momentum).
+    Returns None if no active row is found or table does not exist.
+    """
+    if bot_id is None:
+        bot_id = "cyclus"  # Default to cyclus for backward compatibility
+    
+    try:
+        with get_conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT bot_id, proxies, stocks,
+                           rank_weights, lookback_days, history_period,
+                           rebalance_freq, stock_bench_mode, is_active
+                    FROM trading.alpha2
+                    WHERE bot_id = %s AND is_active = TRUE
+                    LIMIT 1
+                    """,
+                    (bot_id,)
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+
+                config = dict(row)
+                config["proxies"] = dict(config.get("proxies") or {})
+                config["stocks"] = dict(config.get("stocks") or {})
+                config["rank_weights"] = list(config.get("rank_weights") or [0.40, 0.30, 0.20, 0.10])
+                return config
+    except Exception as e:
+        print(f"Warning: Could not fetch alpha2 config for {bot_id}: {e}")
+        return None

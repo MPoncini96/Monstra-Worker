@@ -1,26 +1,43 @@
-# bots/Bellator.py
+# bots/alpha1.py
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timezone
-from bots.alpha1 import (
-    _default_top_weights,
-    _compute_growth,
-    _top_n_by_growth,
-)
 
-# Default fallback configuration
+# Default fallback configuration (used if database is unavailable)
 DEFAULT_UNIVERSE = [
-    "LMT", "RTX", "BA", "GD", "NOC", "LHX", "LDOS",
-    "AVAV", "HII", "BAH", "CACI", "VSAT", "MOG-A",
+    "VOO", "QQQ",
+    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL",
+    "COST", "JPM", "UNH", "HD",
+    "AMD", "AVGO",
 ]
+
 DEFAULT_CASH_EQUIVALENT = "VOO"
 DEFAULT_TOP_N = 4
+DEFAULT_WEIGHTS = np.array([0.40, 0.30, 0.20, 0.10], dtype=float)
 
 
-def run_bellator(
+def _default_top_weights(n: int = 4, base=(0.40, 0.30, 0.20, 0.10)) -> np.ndarray:
+    if n == 4:
+        return np.array(base, dtype=float)
+    w = np.linspace(n, 1, n, dtype=float)
+    w /= w.sum()
+    return w
+
+
+def _compute_growth(prices: pd.DataFrame, lookback_days: int = 14, bars_per_day: int = 24) -> pd.DataFrame:
+    lb = int(lookback_days * bars_per_day)
+    return prices / prices.shift(lb) - 1.0
+
+
+def _top_n_by_growth(growth_row: pd.Series, n: int = 4) -> list[str]:
+    g = growth_row.dropna().sort_values(ascending=False)
+    return list(g.index[:n])
+
+
+def run_alpha1(
     lookback_days: int | None = None,
     top_n: int | None = None,
     history_period: str | None = None,
@@ -28,10 +45,10 @@ def run_bellator(
     use_db_config: bool = True,
 ) -> dict:
     """
-    Bellator (Defense Rank Rotation) — Signal generator:
+    Alpha1 (Rank Rotation) — Signal generator:
     - Fetches configuration from database (trading.bots) if use_db_config=True
     - Falls back to default parameters if database unavailable or use_db_config=False
-    - Download 1h prices for defense universe
+    - Download 1h prices for UNIVERSE
     - Compute growth over lookback_days (assuming ~24 bars/day)
     - Select top_n tickers by growth
     - Output target_weights (40/30/20/10 default)
@@ -42,6 +59,7 @@ def run_bellator(
     universe = DEFAULT_UNIVERSE
     cash_equivalent = DEFAULT_CASH_EQUIVALENT
     top_n_config = DEFAULT_TOP_N
+    weights_config = DEFAULT_WEIGHTS
     lookback_days_config = 14
     history_period_config = "60d"
     interval_config = "1h"
@@ -49,11 +67,12 @@ def run_bellator(
     if use_db_config:
         try:
             from db import get_bot_config
-            config = get_bot_config("bellator")
+            config = get_bot_config("alpha1")
             if config:
                 universe = config.get("universe", DEFAULT_UNIVERSE)
                 cash_equivalent = config.get("cash_equivalent", DEFAULT_CASH_EQUIVALENT)
                 top_n_config = config.get("top_n", DEFAULT_TOP_N)
+                weights_config = np.array(config.get("weights", [0.40, 0.30, 0.20, 0.10]), dtype=float)
                 lookback_days_config = config.get("lookback_days", 14)
                 history_period_config = config.get("history_period", "60d")
                 interval_config = config.get("interval", "1h")
@@ -89,11 +108,11 @@ def run_bellator(
 
     prices = prices.sort_index().dropna(how="all")
 
-    # Not enough history -> HOLD cash-like
+    # Not enough history -> HOLD cash-like (VOO as default)
     min_rows = int(lookback_days * 24) + 5
     if prices.empty or len(prices.index) < min_rows:
         return {
-            "bot_id": "bellator",
+            "bot_id": "alpha1",
             "ts": ts,
             "signal": "HOLD",
             "note": f"Not enough {interval} history for lookback={lookback_days}d; holding {cash_equivalent}",
@@ -124,7 +143,7 @@ def run_bellator(
         note = f"As of {asof}: top={', '.join(top)}"
 
     return {
-        "bot_id": "bellator",
+        "bot_id": "alpha1",
         "ts": ts,
         "signal": signal,
         "note": note,

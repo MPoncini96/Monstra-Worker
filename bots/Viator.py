@@ -48,8 +48,28 @@ def _quiet_yfinance(level: int = logging.ERROR):
 
 
 # ----------------------------
-# Config
+# Config & Defaults
 # ----------------------------
+
+DEFAULT_COUNTRY_PROXIES = {
+    "Canada": "EWC",
+    "UK": "EWU",
+    "Germany": "EWG",
+    "France": "EWQ",
+    "Japan": "EWJ",
+    "China": "FXI",
+    "South Korea": "EWY",
+    "Taiwan": "EWT",
+    "Brazil": "EWZ",
+    "India": "INDA",
+    "Australia": "EWA",
+    "South Africa": "EZA",
+}
+
+DEFAULT_RANK_WEIGHTS = np.array([0.40, 0.30, 0.20, 0.10], dtype=float)
+DEFAULT_LOOKBACK_DAYS = 10
+DEFAULT_HISTORY_PERIOD = "9mo"
+DEFAULT_REBALANCE_FREQ = "W-FRI"
 
 @dataclass
 class ViatorConfig:
@@ -76,10 +96,10 @@ class ViatorConfig:
 
 
 # ----------------------------
-# Example Universe (edit this)
+# Example Universe (edit this or load from database)
 # ----------------------------
 
-COUNTRY_TICKERS: Dict[str, List[str]] = {
+DEFAULT_COUNTRY_STOCKS: Dict[str, List[str]] = {
     "Canada": ["RY", "TD", "BNS", "BMO", "CM", "ENB", "SU", "CNQ", "SHOP", "TRP", "BCE", "CNI"],
     "UK": ["HSBC", "BP", "SHEL", "UL", "AZN", "GSK", "BCS", "RIO", "BTI", "DEO", "RELX", "NGG"],
     "Germany": ["SAP", "DTEGY", "VWAGY", "BMWYY", "MBGYY", "BASFY", "SIEGY", "IFNNY", "ALIZY", "BAYRY", "DHLGY", "PAH3.DE"],
@@ -89,13 +109,12 @@ COUNTRY_TICKERS: Dict[str, List[str]] = {
     "South Korea": ["SSNLF", "HYMTF", "KB", "SHG", "KT", "SKM", "LPL", "KSC", "DOX", "WOR", "LGCLF", "KIMTF"],
     "Taiwan": ["TSM", "UMC", "ASX", "AUOTY", "LITE", "CHT", "IMOS", "GIGM", "TSYHY", "ACTTF", "WDC", "ACLS"],
     "Brazil": ["VALE", "PBR", "ITUB", "BBD", "BSBR", "ABEV", "ELET", "ERJ", "SUZ", "BRFS", "GGB", "SID"],
-    "Mexico": ["AMX", "FMX", "CX", "CEMXY", "OMAB", "PAC", "ASR", "TV", "KOF", "GMBXF", "SIM", "WMMVY"],
     "India": ["INFY", "WIT", "HDB", "IBN", "RDY", "MMYT", "SIFY", "VEDL", "IGIC", "YTRA", "BSEFY"],
     "Australia": ["BHP", "RIO", "WDS", "FMG", "CSL", "NABZY", "ANZBY", "TLSYY", "WOW", "MQBKY", "QBEIF"],
     "South Africa": ["SBSW", "GFI", "MTNOY", "VOD", "NPSNY", "ANGPY", "AGPPY", "SOUHY", "RNECY", "KRO", "TECK", "DRD"],
-    "Netherlands": ["ASML", "ING", "PHG", "SHEL", "HEINY", "TKPHF", "WLSCY", "PNDHF", "AEG", "RNLXY", "STM"],
-    "Switzerland": ["NVS", "RHHBY", "NSRGY", "UBS", "ABB", "ZURVY", "GEBN", "ROG", "CS"],
 }
+
+COUNTRY_TICKERS: Dict[str, List[str]] = DEFAULT_COUNTRY_STOCKS.copy()
 
 # ----------------------------
 # Fixups for flaky/changed tickers
@@ -451,12 +470,34 @@ def run_viator_stateful(
 
 
 def run_viator_with_pruning(
-    raw_country_map: Dict[str, List[str]],
+    raw_country_map: Dict[str, List[str]] | None = None,
     cfg: ViatorConfig | None = None,
     state: dict | None = None,
+    use_db_config: bool = True,
 ) -> dict:
     if cfg is None:
         cfg = ViatorConfig()
+    
+    # Load from database if requested
+    if use_db_config:
+        try:
+            from db import get_alpha2_config
+            db_config = get_alpha2_config("viator")
+            if db_config:
+                cfg.history_period = db_config.get("history_period", cfg.history_period)
+                cfg.momentum_lookback_days = int(db_config.get("lookback_days", cfg.momentum_lookback_days))
+                cfg.rebalance_rule = db_config.get("rebalance_freq", cfg.rebalance_rule)
+                cfg.weights = np.array(db_config.get("rank_weights", [0.40, 0.30, 0.20, 0.10]), dtype=float)
+                
+                # Load country stocks from database (proxies are ETFs, stocks are tickers)
+                if raw_country_map is None:
+                    raw_country_map = db_config.get("stocks", DEFAULT_COUNTRY_STOCKS)
+        except Exception as e:
+            print(f"Warning: Could not load viator config from database, using defaults: {e}")
+    
+    # Fall back to defaults or passed argument
+    if raw_country_map is None:
+        raw_country_map = DEFAULT_COUNTRY_STOCKS
 
     fixed = apply_ticker_fixups(raw_country_map)
     pruned_map, report = prune_country_universe(fixed, cfg)
