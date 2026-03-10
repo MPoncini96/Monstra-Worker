@@ -25,17 +25,6 @@ CREATE TABLE IF NOT EXISTS trading.bot_state (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bot_state_updated_at ON trading.bot_state(updated_at);
-
-CREATE TABLE IF NOT EXISTS trading.signals (
-    bot_id VARCHAR(50) NOT NULL,
-    ts TIMESTAMP NOT NULL,
-    signal VARCHAR(50) NOT NULL,
-    note TEXT,
-    payload JSONB DEFAULT '{}'::jsonb,
-    PRIMARY KEY (bot_id, ts)
-);
-
-CREATE INDEX IF NOT EXISTS idx_signals_bot_id_ts ON trading.signals(bot_id, ts);
 """
 
 conn = psycopg2.connect(DATABASE_URL)
@@ -44,7 +33,7 @@ cursor = conn.cursor()
 try:
     cursor.execute(create_tables_sql)
     conn.commit()
-    print("✓ Created trading.bot_equity, trading.bot_state, and trading.signals tables")
+    print("✓ Created trading.bot_equity and trading.bot_state tables")
 except Exception as e:
     print(f"Error: {e}")
     conn.rollback()

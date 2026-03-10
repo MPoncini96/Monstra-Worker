@@ -104,53 +104,60 @@ def set_bot_state(bot_id: str, state: dict) -> None:
         conn.commit()
         
 def write_signal(bot_id: str, ts, signal: str, note: str | None, payload: dict):
+    """Store signal metadata in bot_equity table.
+    The signal info is stored alongside equity data for the current date.
+    """
+    d = ts.date() if hasattr(ts, 'date') else ts
+    
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Ensure signals table exists
+            # Store signal metadata in bot_equity
+            # We'll add signal/note/payload to holdings JSONB as metadata
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS trading.signals (
-                    bot_id TEXT NOT NULL,
-                    ts TIMESTAMP NOT NULL,
-                    signal TEXT NOT NULL,
-                    note TEXT,
-                    payload JSONB,
-                    PRIMARY KEY (bot_id, ts)
-                )
-                """
-            )
-            
-            cur.execute(
-                """
-                INSERT INTO trading.signals (bot_id, ts, signal, note, payload)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (bot_id, ts) DO UPDATE SET
-                    signal = EXCLUDED.signal,
-                    note = EXCLUDED.note,
-                    payload = EXCLUDED.payload
+                INSERT INTO trading.bot_equity (bot_id, d, equity, ret, holdings)
+                VALUES (%s, %s, 1.0, 0.0, %s)
+                ON CONFLICT (bot_id, d) DO UPDATE SET
+                    holdings = trading.bot_equity.holdings || EXCLUDED.holdings
                 """,
-                (bot_id, ts, signal, note, Json(payload or {})),
+                (bot_id, d, Json({
+                    '_signal': signal,
+                    '_note': note,
+                    '_payload': payload or {},
+                    '_ts': str(ts),
+                    **(payload.get('target_weights', {}) if payload else {})
+                })),
             )
         conn.commit()
 
 def get_latest_signal(bot_id: str) -> dict | None:
     """
-    Returns the most recent signal row for a bot_id, or None if none exists.
+    Returns the most recent signal metadata from bot_equity for a bot_id, or None if none exists.
     """
     with get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT bot_id, ts, signal, note, payload
-                FROM trading.signals
-                WHERE bot_id = %s
-                ORDER BY ts DESC
+                SELECT bot_id, d, holdings
+                FROM trading.bot_equity
+                WHERE bot_id = %s AND holdings ? '_signal'
+                ORDER BY d DESC
                 LIMIT 1
                 """,
                 (bot_id,),
             )
             row = cur.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            
+            holdings = row['holdings']
+            return {
+                'bot_id': row['bot_id'],
+                'ts': holdings.get('_ts'),
+                'signal': holdings.get('_signal'),
+                'note': holdings.get('_note'),
+                'payload': holdings.get('_payload', {}),
+            }
 
 def get_latest_bot_equity(bot_id: str) -> dict | None:
     """Return the most recent bot_equity row for a bot_id, or None if none exists."""
@@ -179,7 +186,73 @@ def get_latest_bot_equity(bot_id: str) -> dict | None:
 
             return data
 
+
+def get_latest_bot_equity_before(bot_id: str, before_date) -> dict | None:
+    """Return most recent bot_equity row strictly before the given date."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT bot_id, d, equity, ret, holdings
+                FROM trading.bot_equity
+                WHERE bot_id = %s AND d < %s
+                ORDER BY d DESC
+                LIMIT 1
+                """,
+                (bot_id, before_date),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+
+            data = dict(row)
+            holdings = data.get("holdings")
+            if isinstance(holdings, dict):
+                data["holdings"] = {
+                    k: v for k, v in holdings.items() if not str(k).startswith("_")
+                }
+
+            return data
+
+
+def get_bot_equity_row(bot_id: str, d) -> dict | None:
+    """Return a specific bot_equity row for a bot/date, including holdings metadata."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT bot_id, d, equity, ret, holdings
+                FROM trading.bot_equity
+                WHERE bot_id = %s AND d = %s
+                LIMIT 1
+                """,
+                (bot_id, d),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def _merge_holdings_metadata(existing_holdings: dict | None, new_holdings: dict | None) -> dict:
+    """Keep underscore-prefixed metadata from an existing row while replacing live holdings."""
+    merged: dict = {}
+
+    if isinstance(existing_holdings, dict):
+        merged.update({
+            k: v for k, v in existing_holdings.items() if str(k).startswith("_")
+        })
+
+    if isinstance(new_holdings, dict):
+        merged.update(new_holdings)
+
+    return merged
+
 def upsert_bot_equity(bot_id: str, d, equity: float, ret: float | None, holdings: dict | None) -> None:
+    existing = get_bot_equity_row(bot_id, d)
+    merged_holdings = _merge_holdings_metadata(
+        existing.get("holdings") if existing else None,
+        holdings or {},
+    )
+
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -191,7 +264,7 @@ def upsert_bot_equity(bot_id: str, d, equity: float, ret: float | None, holdings
                 holdings = EXCLUDED.holdings,
                 updated_at = now()
             """,
-            (bot_id, d, float(equity), None if ret is None else float(ret), Json(holdings or {})),
+            (bot_id, d, float(equity), None if ret is None else float(ret), Json(merged_holdings)),
         )
         conn.commit()
 
@@ -215,9 +288,9 @@ def update_bot_equity(bot_id: str, signal_row: dict) -> None:
     ts = signal_row.get("ts", datetime.now(timezone.utc))
     d = ts.date() if hasattr(ts, "date") else ts
 
-    prev = get_latest_bot_equity(bot_id) or {}
+    prev = get_latest_bot_equity_before(bot_id, d) or {}
     prev_equity = float(prev.get("equity", 1.0))
-    prev_date = prev.get("d")  # Previous stored date
+    prev_date = prev.get("d")
     holdings = dict(prev.get("holdings") or {})
 
     # If REBALANCE with non-empty weights, adopt new weights; otherwise keep prior holdings.
@@ -271,11 +344,9 @@ def update_bot_equity(bot_id: str, signal_row: dict) -> None:
     last_price_date = last_two.index[-1].date() if hasattr(last_two.index[-1], 'date') else last_two.index[-1]
     second_last_price_date = last_two.index[-2].date() if hasattr(last_two.index[-2], 'date') else last_two.index[-2]
     
-    # CRITICAL: Only apply return if the last price date is NEW (not already processed).
-    # If market is open intraday, the last_price_date will be from yesterday, which was
-    # already applied in a previous update. Skip it to avoid double-counting.
+    # Only apply return when the most recent close is newer than our prior stored trading date.
+    # This avoids double-counting when no new daily close is available yet.
     if prev_date is not None and prev_date >= last_price_date:
-        # The price data is for a date we've already processed. Store current equity with 0 return.
         upsert_bot_equity(bot_id=bot_id, d=d, equity=prev_equity, ret=0.0, holdings=holdings)
         return
 
@@ -302,23 +373,44 @@ def update_bot_equity(bot_id: str, signal_row: dict) -> None:
 def get_bot_config(bot_id: str) -> dict | None:
     """
     Fetch bot configuration from trading.alpha1 table.
-    Returns dict with keys: universe, cash_equivalent, top_n, weights, 
-    lookback_days, history_period, interval
+    Returns dict with base keys plus optional live alpha1 strategy fields.
     Returns None if bot_id not found or table doesn't exist.
     """
     try:
         with get_conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT bot_id, name, description, universe, cash_equivalent,
-                           top_n, weights, lookback_days, history_period, 
-                           interval, is_active
-                    FROM trading.alpha1
-                    WHERE bot_id = %s AND is_active = TRUE
-                    """,
-                    (bot_id,),
-                )
+                try:
+                    cur.execute(
+                        """
+                        SELECT bot_id, name, description, universe, cash_equivalent,
+                               top_n, weights, lookback_days, history_period,
+                               interval, benchmark,
+                               COALESCE(enable_kill_switch, true) AS enable_kill_switch,
+                               COALESCE(enable_benchmark_filter, false) AS enable_benchmark_filter,
+                               COALESCE(kill_switch_mode, 'top_negative') AS kill_switch_mode,
+                               COALESCE(benchmark_mode, 'benchmark_positive') AS benchmark_mode,
+                               COALESCE(top_return_threshold, 0.0) AS top_return_threshold,
+                               COALESCE(benchmark_return_threshold, 0.0) AS benchmark_return_threshold,
+                               COALESCE(transaction_cost_bps, 5.0) AS transaction_cost_bps,
+                               COALESCE(slippage_bps, 5.0) AS slippage_bps,
+                               is_active
+                        FROM trading.alpha1
+                        WHERE bot_id = %s AND is_active = TRUE
+                        """,
+                        (bot_id,),
+                    )
+                except Exception:
+                    conn.rollback()
+                    cur.execute(
+                        """
+                        SELECT bot_id, name, description, universe, cash_equivalent,
+                               top_n, weights, lookback_days, history_period,
+                               interval, is_active
+                        FROM trading.alpha1
+                        WHERE bot_id = %s AND is_active = TRUE
+                        """,
+                        (bot_id,),
+                    )
                 row = cur.fetchone()
                 if not row:
                     return None
@@ -346,17 +438,41 @@ def get_alpha2_config(bot_id: str = None) -> dict | None:
     try:
         with get_conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT bot_id, proxies, stocks,
-                           rank_weights, lookback_days, history_period,
-                           rebalance_freq, stock_bench_mode, is_active
-                    FROM trading.alpha2
-                    WHERE bot_id = %s AND is_active = TRUE
-                    LIMIT 1
-                    """,
-                    (bot_id,)
-                )
+                try:
+                    cur.execute(
+                        """
+                        SELECT bot_id, proxies, stocks,
+                               rank_weights, lookback_days, history_period,
+                               rebalance_freq, stock_bench_mode,
+                               cash_equivalent, benchmark,
+                               COALESCE(enable_kill_switch, true) AS enable_kill_switch,
+                               COALESCE(enable_benchmark_filter, false) AS enable_benchmark_filter,
+                               COALESCE(kill_switch_mode, 'top_negative') AS kill_switch_mode,
+                               COALESCE(benchmark_mode, 'benchmark_positive') AS benchmark_mode,
+                               COALESCE(top_return_threshold, 0.0) AS top_return_threshold,
+                               COALESCE(benchmark_return_threshold, 0.0) AS benchmark_return_threshold,
+                               COALESCE(transaction_cost_bps, 5.0) AS transaction_cost_bps,
+                               COALESCE(slippage_bps, 5.0) AS slippage_bps,
+                               is_active
+                        FROM trading.alpha2
+                        WHERE bot_id = %s AND is_active = TRUE
+                        LIMIT 1
+                        """,
+                        (bot_id,)
+                    )
+                except Exception:
+                    conn.rollback()
+                    cur.execute(
+                        """
+                        SELECT bot_id, proxies, stocks,
+                               rank_weights, lookback_days, history_period,
+                               rebalance_freq, stock_bench_mode, is_active
+                        FROM trading.alpha2
+                        WHERE bot_id = %s AND is_active = TRUE
+                        LIMIT 1
+                        """,
+                        (bot_id,)
+                    )
                 row = cur.fetchone()
                 if not row:
                     return None
