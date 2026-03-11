@@ -857,7 +857,14 @@ def backfill_single_bot(bot: Alpha2BotConfig) -> dict[str, Any]:
                     weights=weights,
                 )
 
-                current_target_holdings = new_holdings
+                if new_holdings:
+                    current_target_holdings = new_holdings
+                elif prev_holdings:
+                    current_target_holdings = prev_holdings.copy()
+                    if risk_reason == "risk_on":
+                        risk_reason = "fallback:carry_forward_prev_holdings"
+                else:
+                    current_target_holdings = {}
                 rebalanced_today = True
             else:
                 # Carry forward prior holdings if not a rebalance day
